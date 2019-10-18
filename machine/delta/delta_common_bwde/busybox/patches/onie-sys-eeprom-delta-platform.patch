@@ -61,7 +61,7 @@ index 72ddcd1..ded22f3 100644
 +lib-y                     += dni_pdetect.o
 diff --git a/miscutils/dni_pdetect.c b/miscutils/dni_pdetect.c
 new file mode 100644
-index 0000000..867ac88
+index 0000000..77b338d
 --- /dev/null
 +++ b/miscutils/dni_pdetect.c
 @@ -0,0 +1,493 @@
@@ -371,8 +371,8 @@ index 0000000..867ac88
 +                    }
 +                    pclose(pFw);
 +                    action_check++;
++                    getinfor = 1;
 +                }
-+                getinfor = 1;
 +                break;
 +            case 1:
 +                goto END;
