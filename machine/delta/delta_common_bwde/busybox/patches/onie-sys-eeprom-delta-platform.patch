@@ -12,14 +12,32 @@ index 71b8cbd..62a1c65 100644
  	&& !defined(MAKE_LINKS) && !defined(MAKE_SUID)
 diff --git a/include/dni_pdetect.h b/include/dni_pdetect.h
 new file mode 100644
-index 0000000..25cf370
+index 0000000..9496c79
 --- /dev/null
 +++ b/include/dni_pdetect.h
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,52 @@
 +int dni_product_name_get(char *r_str);
 +int dni_dmidecode_get(char *r_str, int type);
 +int dni_eeprom_path_get(int *r_bus, int *r_addr);
 +void eeprom_write_protect(int mode);
++
++#define CMD_SIZE 64
++#define TAG_SIZE 50
++#define PRODUCT_NAME_SIZE 50
++#define BUF_SIZE 50 
++#define COMBINATION_SIZE 6
++#define CPLD_BUS_OFFSET 4
++#define REG_OFFSET 2
++#define VALUE_OFFSET 4
++#define PATH_CMD_NUM_OFFSET 5
++#define ONE_BIT 2
++#define TWO_BIT 3
++#define BUS_PATH_SIZE 20
++#define R_VALUE_SIZE 10
++#define INFO_SIZE 8
++#define EEPROM_BUS_OFFSET 1
++#define EEPROM_ADDR_OFFSET 2
++
 +
 +typedef struct product_s
 +{
@@ -61,10 +79,10 @@ index 72ddcd1..ded22f3 100644
 +lib-y                     += dni_pdetect.o
 diff --git a/miscutils/dni_pdetect.c b/miscutils/dni_pdetect.c
 new file mode 100644
-index 0000000..77b338d
+index 0000000..e2d8c53
 --- /dev/null
 +++ b/miscutils/dni_pdetect.c
-@@ -0,0 +1,493 @@
+@@ -0,0 +1,494 @@
 +#include "libbb.h"
 +#include <i2c-dev.h>
 +#include <getopt.h>
@@ -152,8 +170,8 @@ index 0000000..77b338d
 +{
 +    int count = 0;
 +    int c, option_index;
-+    char product_name[50] = {0};
-+    char set_cmd[50] = {0};
++    char product_name[PRODUCT_NAME_SIZE] = {0};
++    char set_cmd[CMD_SIZE] = {0};
 +    char *subopts;
 +    char *value;
 +    int index;
@@ -200,8 +218,8 @@ index 0000000..77b338d
 +int dni_dmidecode_get(char *r_str, int type)
 +{
 +    FILE *fpRead;
-+    char cmd[50] = {0};
-+    char buf[50] = {0};
++    char cmd[CMD_SIZE] = {0};
++    char buf[BUF_SIZE] = {0};
 +    int rv = -1;
 +
 +    switch(type)
@@ -237,8 +255,8 @@ index 0000000..77b338d
 +int dni_syseeprom_productname_get(char *r_str)
 +{
 +    FILE *fpRead;
-+    char cmd[50] = {0};
-+    char buf[50] = {0};
++    char cmd[CMD_SIZE] = {0};
++    char buf[BUF_SIZE] = {0};
 +    int rv = -1;
 +
 +    sprintf(cmd, "onie-syseeprom -g 0x21");
@@ -285,23 +303,40 @@ index 0000000..77b338d
 +    return rv;
 +}
 +
++int dni_i2c_set(int bus, int addr, int reg, int value)
++{
++    FILE *pFw  = NULL;
++    char set_cmd[CMD_SIZE] = {0};
++    char buf[BUF_SIZE] = {0};
++    int rv = 0;
++    sprintf(set_cmd, "i2cset -y %d 0x%x 0x%x 0x%x > /dev/null 2>&1", bus, addr, reg, value);
++    pFw = popen(set_cmd, "r");
++    if(pFw != NULL)
++    {
++        if(fgets(buf, sizeof(buf), pFw) != NULL)
++        {
++            rv = -1;
++        }
++    }
++    pclose(pFw);
++    return rv;
++}
++
 +void eeprom_write_protect(int mode)
 +{
 +    FILE *pFr  = NULL;
-+    FILE *pFw  = NULL;
-+    char get_value_cmd[64] = {0};
-+    char write_protect_cmd[64] = {0};
-+    char r_value[10] = {0};
-+    char product_name[50] = {0};
-+    char s_type[2] = {0};
-+    char s_bus[2] = {0};
-+    char s_tag[2] = {0};
-+    char s_action_num[2] = {0};
-+    char s_value[50] = {0};
-+    char s_addr[3] = {0};
-+    char s_reg[3] = {0};
-+    char s_offset[3] = {0};
-+    char s_info[8] = {0};
++    char get_value_cmd[CMD_SIZE] = {0};
++    char write_protect_cmd[CMD_SIZE] = {0};
++    char r_value[R_VALUE_SIZE] = {0};
++    char product_name[PRODUCT_NAME_SIZE] = {0};
++    char s_type[ONE_BIT] = {0};
++    char s_bus[ONE_BIT] = {0};
++    char s_tag[TAG_SIZE] = {0};
++    char s_path_cmd_num[ONE_BIT] = {0};
++    char s_addr[TWO_BIT] = {0};
++    char s_reg[TWO_BIT] = {0};
++    char s_value[TWO_BIT] = {0};
++    char s_info[INFO_SIZE] = {0};
 +    int i = 0;
 +    int type = 0;
 +    int bus = 0;
@@ -313,63 +348,55 @@ index 0000000..77b338d
 +    int rv = 0;
 +    int getinfor = 0;
 +    int check_num = 0;
-+    long action_num = 0;
++    long path_cmd_num = 0;
 +    int action_check = 0;
 +    int p_index = 0;    
-+    char buf[50] = {0};
++    char buf[BUF_SIZE] = {0};
 +
-+    if(dni_dmidecode_get(s_value, ASSETTAG) == 0)
++    if(dni_dmidecode_get(s_tag, ASSETTAG) == 0)
 +    {
 +        /*0    0       53     0   1             31   14  fc    31   14  fd
-+          type eebus eeaddr bus action number addr reg value addr reg value
++          type eebus eeaddr  bus path_cmd_num   addr reg value addr reg value
 +        */
-+        strncpy(s_type, s_value, 1);
++        strncpy(s_type, s_tag, 1);
 +        type = strtol(s_type, NULL, 10);
 +        switch(type)
 +        {
 +            case 0:
-+                strncpy(s_bus, s_value + 4, 1);
++                strncpy(s_bus, s_tag + CPLD_BUS_OFFSET, 1);
 +                bus = strtol(s_bus, NULL, 10);
-+                strncpy(s_action_num, s_value + 5, 1);
-+                action_num = strtol(s_action_num, NULL, 10);
-+                for(i = 6; i < strlen(s_value); i += 6)
++                strncpy(s_path_cmd_num, s_tag + PATH_CMD_NUM_OFFSET, 1);
++                path_cmd_num = strtol(s_path_cmd_num, NULL, 10);
++                if(path_cmd_num == 0)
 +                {
-+                    strncpy(s_info, s_value + i, 6);
++                    goto END;
++                }
++                for(i = 6; i < strlen(s_tag); i += 6)
++                {
++                    strncpy(s_info, s_tag + i, 6);
 +                    strncpy(s_addr, s_info, 2);
-+                    strncpy(s_reg, s_info + 2, 2);
-+                    strncpy(s_offset, s_info + 4, 2);
++                    strncpy(s_reg, s_info + REG_OFFSET, 2);
++                    strncpy(s_value, s_info + VALUE_OFFSET, 2);
 +                    addr = strtol(s_addr, NULL, 16);
 +                    reg = strtol(s_reg, NULL, 16);
-+                    value = strtol(s_offset, NULL, 16);
-+                    if(mode == DISABLE_MODE && action_check < action_num)
++                    value = strtol(s_value, NULL, 16);
++                    if(mode == DISABLE_MODE && action_check < path_cmd_num)
 +                    {
-+                        sprintf(write_protect_cmd, "i2cset -y %d 0x%x 0x%x 0x%x > /dev/null 2>&1", bus, addr, reg, value);
-+                        pFw = popen(write_protect_cmd, "r");
-+                        if(pFw != NULL)
++                        if(dni_i2c_set(bus, addr, reg, value) == -1)
 +                        {
-+                            if(fgets(buf, sizeof(buf), pFw) != NULL)
-+                            {
-+                                pclose(pFw);
-+                                getinfor = 0;
-+                                break;
-+                            }
++                            getinfor = 0;
++                            break;
++                        }
++                        
++                    }
++                    else if(mode == ENABLE_MODE && action_check >= path_cmd_num)
++                    {
++                        if(dni_i2c_set(bus, addr, reg, value) == -1)
++                        {
++                            getinfor = 0;
++                            break;
 +                        }
 +                    }
-+                    else if(mode == ENABLE_MODE && action_check >= action_num)
-+                    {
-+                        sprintf(write_protect_cmd, "i2cset -y %d 0x%x 0x%x 0x%x > /dev/null 2>&1", bus, addr, reg, value);
-+                        pFw = popen(write_protect_cmd, "r");
-+                        if(pFw != NULL)
-+                        {
-+                            if(fgets(buf, sizeof(buf), pFw) != NULL)
-+                            {
-+                                pclose(pFw);
-+                                getinfor = 0;
-+                                break;
-+                            }
-+                        }
-+                    }
-+                    pclose(pFw);
 +                    action_check++;
 +                    getinfor = 1;
 +                }
@@ -414,18 +441,11 @@ index 0000000..77b338d
 +                            value = ( rv & portect_info[p_index].disable_offset);
 +                            break;
 +                    }
-+                    sprintf(write_protect_cmd, "i2cset -y %d 0x%x 0x%x 0x%x > /dev/null 2>&1", portect_info[p_index].bus, portect_info[p_index].addr, portect_info[p_index].reg, value);
-+                    pFw = popen(write_protect_cmd, "r");
-+                    if(pFw != NULL)
++                    if(dni_i2c_set(portect_info[p_index].bus, portect_info[p_index].addr, portect_info[p_index].reg, value) == -1)
 +                    {
-+                        if(fgets(buf, sizeof(buf), pFw) != NULL)
-+                        {
-+                            pclose(pFw);
-+                            pclose(pFr);
-+                            goto END;
-+                        }
++                        pclose(pFr);
++                        goto END;
 +                    }
-+                    pclose(pFw);
 +                }
 +            }
 +            pclose(pFr);
@@ -440,10 +460,10 @@ index 0000000..77b338d
 +{
 +    int rv = -1;
 +    int i;
-+    char s_value[50] = {0};
-+    char product_name[50] = {0};
++    char s_tag[TAG_SIZE] = {0};
++    char product_name[PRODUCT_NAME_SIZE] = {0};
 +
-+    if(dni_dmidecode_get(s_value, ASSETTAG) == 0)
++    if(dni_dmidecode_get(s_tag, ASSETTAG) == 0)
 +    {
 +        if(dni_syseeprom_productname_get(product_name) == 0)
 +        {
@@ -476,30 +496,27 @@ index 0000000..77b338d
 +    int rv = -1;
 +    int i;
 +    int check_num = 0;
-+    char s_value[50] = {0};
-+    char s_eeprom_bus[2]= {0};
-+    char s_eeprom_addr[3]= {0};
-+    char product_name[50] = {0};
-+    char i2c_bus[20] = {0};
++    char s_tag[TAG_SIZE] = {0};
++    char s_eeprom_bus[ONE_BIT]= {0};
++    char s_eeprom_addr[TWO_BIT]= {0};
++    char product_name[PRODUCT_NAME_SIZE] = {0};
++    char i2c_bus_path[BUS_PATH_SIZE] = {0};
 +    struct eeprom e;
 +    int p_index = 0;
 +    int inforget = 0;
 +    int eepromBus = 0;
 +    int eepromAddr = 0x0;
 +
-+    if(dni_dmidecode_get(s_value, ASSETTAG) == 0)
++    if(dni_dmidecode_get(s_tag, ASSETTAG) == 0)
 +    {
-+        strncpy(s_eeprom_bus, s_value + 1, 1);
++        strncpy(s_eeprom_bus, s_tag + EEPROM_BUS_OFFSET, 1);
 +        eepromBus = strtol(s_eeprom_bus, NULL, 10);
-+        strncpy(s_eeprom_addr, s_value + 2, 2);
++        strncpy(s_eeprom_addr, s_tag + EEPROM_ADDR_OFFSET, 2);
 +        eepromAddr = strtol(s_eeprom_addr, NULL, 16);
-+        sprintf(i2c_bus, "/dev/i2c-%d", eepromBus);
-+        if(eeprom_open(i2c_bus, eepromAddr, EEPROM_TYPE, &e) == 0)
++        sprintf(i2c_bus_path, "/dev/i2c-%d", eepromBus);
++        if(eeprom_open(i2c_bus_path, eepromAddr, EEPROM_TYPE, &e) == 0)
 +        {
-+            rv = 0;
 +            inforget = 1;
-+            *r_bus = eepromBus;
-+            *r_addr = eepromAddr;
 +        }
 +        else
 +        {
@@ -521,13 +538,10 @@ index 0000000..77b338d
 +        {
 +            eepromBus = eeprom_path[p_index].bus;
 +            eepromAddr = eeprom_path[p_index].addr;
-+            sprintf(i2c_bus, "/dev/i2c-%d", eepromBus);
-+            if(eeprom_open(i2c_bus, eepromAddr, EEPROM_TYPE, &e) == 0)
++            sprintf(i2c_bus_path, "/dev/i2c-%d", eepromBus);
++            if(eeprom_open(i2c_bus_path, eepromAddr, EEPROM_TYPE, &e) == 0)
 +            {
-+                rv = 0;
 +                inforget = 1;
-+                *r_bus = eepromBus;
-+                *r_addr = eepromAddr;
 +            }
 +            else
 +            {
@@ -543,17 +557,22 @@ index 0000000..77b338d
 +        {
 +            eepromBus = tryeeprom_path[i].bus;
 +            eepromAddr = tryeeprom_path[i].addr;
-+            sprintf(i2c_bus, "/dev/i2c-%d", eepromBus);
-+            if(eeprom_open(i2c_bus, eepromAddr, EEPROM_TYPE, &e) == 0)
++            sprintf(i2c_bus_path, "/dev/i2c-%d", eepromBus);
++            if(eeprom_open(i2c_bus_path, eepromAddr, EEPROM_TYPE, &e) == 0)
 +            {
-+                *r_bus = eepromBus;
-+                *r_addr = eepromAddr;
-+                rv = 0;
++                inforget = 1;
 +                goto END;
 +            }    
 +        }
 +    }
++
 +END:
++    if(inforget == 1)
++    {
++        *r_bus = eepromBus;
++        *r_addr = eepromAddr;
++        rv = 0;
++    }
 +    return rv;
 +}
 +
